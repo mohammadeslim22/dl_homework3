@@ -21,7 +21,7 @@ class SuperTuxDataset(Dataset):
         self.transform = self.get_transform(transform_pipeline)
         self.data = []
 
-        with open(Path(dataset_path, "labels.csv"), newline="") as f:
+        with open(Path(dataset_path), newline="") as f:
             for fname, label, _ in csv.reader(f):
                 if label in LABEL_NAMES:
                     img_path = Path(dataset_path, fname)
