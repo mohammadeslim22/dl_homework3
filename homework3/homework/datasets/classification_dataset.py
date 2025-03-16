@@ -21,7 +21,7 @@ class SuperTuxDataset(Dataset):
         self.transform = self.get_transform(transform_pipeline)
         self.data = []
 
-        with open(Path(dataset_path), newline="") as f:
+        with open(Path(dataset_path, "labels.csv"), newline="") as f:
             for fname, label, _ in csv.reader(f):
                 if label in LABEL_NAMES:
                     img_path = Path(dataset_path, fname)
@@ -35,12 +35,9 @@ class SuperTuxDataset(Dataset):
         if transform_pipeline == "default":
             xform = transforms.ToTensor()
         elif transform_pipeline == "aug":
-            # construct your custom augmentation
+            # TODO: construct your custom augmentation
             xform = transforms.Compose(
                 [
-                    # TODO: fix
-                    # transforms.ColorJitter(0.9, 0.9, 0.9, 0.1),
-                    transforms.RandomHorizontalFlip(),
                     transforms.ToTensor(),
                 ]
             )
@@ -68,7 +65,7 @@ def load_data(
     dataset_path: str,
     transform_pipeline: str = "default",
     return_dataloader: bool = True,
-    num_workers: int = 2,
+    num_workers: int = 4,
     batch_size: int = 128,
     shuffle: bool = False,
 ) -> DataLoader | Dataset:

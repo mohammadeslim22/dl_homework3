@@ -107,26 +107,42 @@ class Detector(torch.nn.Module):
         self.register_buffer("input_mean", torch.as_tensor(INPUT_MEAN))
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD))
 
-        # TODO: implement
-        self.encoder = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-        )
+        def conv_block(in_channels, out_channels):
+            return nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True),
+            )
 
-        self.segmentation_head = nn.Sequential(
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, num_classes, kernel_size=1),
-        )
+        def up_conv(in_channels, out_channels):
+            return nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2)
 
-        self.depth_head = nn.Sequential(
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, 1, kernel_size=1),  # Single-channel depth output
-        )
+        self.encoder1 = conv_block(in_channels, 16)  # 3 --> 64
+        self.encoder2 = conv_block(16, 32)  # 64 --> 128
+        self.encoder3 = conv_block(32, 64)  # 128 --> 256
+        self.encoder4 = conv_block(64, 128)  # 256 --> 512
+
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        self.bottleneck = conv_block(128, 256)  # 512 --> 1024
+
+        self.upconv4 = up_conv(256, 128)  # 1024 --> 512
+        self.decoder4 = conv_block(256, 128)  # 1024 --> 512
+
+        self.upconv3 = up_conv(128, 64)  # 512 --> 256
+        self.decoder3 = conv_block(128, 64)  # 512 --> 256
+
+        self.upconv2 = up_conv(64, 32)  # 256 --> 128
+        self.decoder2 = conv_block(64, 32)  # 256 --> 128
+
+        self.upconv1 = up_conv(32, 16)  # 128 --> 64
+        self.decoder1 = conv_block(32, 16)  # 128 --> 64
+
+        self.final_conv = nn.Conv2d(16, num_classes, kernel_size=1)  # Segmentation output
+        self.depth_conv = nn.Conv2d(16, 1, kernel_size=1)  # Depth prediction layer ✅
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -144,20 +160,32 @@ class Detector(torch.nn.Module):
         # optional: normalizes the input
         z = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
 
-        # TODO: replace with actual forward pass
-        features = self.encoder(z)
+        enc1 = self.encoder1(z)
+        enc2 = self.encoder2(self.pool(enc1))
+        enc3 = self.encoder3(self.pool(enc2))
+        enc4 = self.encoder4(self.pool(enc3))
 
-        # Segmentation output
-        logits = self.segmentation_head(features)
-        logits = F.interpolate(logits, size=(x.shape[2], x.shape[3]), mode="bilinear", align_corners=False)
+        bottleneck = self.bottleneck(self.pool(enc4))
 
-        # Depth output
-        depth = self.depth_head(features)
-        if depth.dim() == 3:
-            depth = depth.unsqueeze(1)
-        depth = F.interpolate(depth, size=(x.shape[2], x.shape[3]), mode="bilinear", align_corners=False).squeeze(1)
+        dec4 = self.upconv4(bottleneck)
+        dec4 = torch.cat((dec4, enc4), dim=1)
+        dec4 = self.decoder4(dec4)
 
-        return logits, depth
+        dec3 = self.upconv3(dec4)
+        dec3 = torch.cat((dec3, enc3), dim=1)
+        dec3 = self.decoder3(dec3)
+
+        dec2 = self.upconv2(dec3)
+        dec2 = torch.cat((dec2, enc2), dim=1)
+        dec2 = self.decoder2(dec2)
+
+        dec1 = self.upconv1(dec2)
+        dec1 = torch.cat((dec1, enc1), dim=1)
+        dec1 = self.decoder1(dec1)
+
+        logits = self.final_conv(dec1)  # Segmentation logits
+        raw_depth = self.depth_conv(dec1)  # Raw depth output
+        return logits, raw_depth.squeeze(1)
 
     def predict(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """

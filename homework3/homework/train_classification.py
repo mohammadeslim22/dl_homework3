@@ -1,3 +1,4 @@
+import csv
 import argparse
 from datetime import datetime
 from pathlib import Path
@@ -6,18 +7,18 @@ import numpy as np
 import torch
 import torch.utils.tensorboard as tb
 
-from .models import ClassificationLoss, load_model, save_model
-from .datasets.classification_dataset import load_data
+
+from .models import load_model, save_model
+from .datasets import classification_dataset
 
 
 def train(
         exp_dir: str = "logs",
         model_name: str = "classifier",
         num_epoch: int = 50,
-        lr: float = 1e-3,
+        lr: float = 1e-4,
         batch_size: int = 128,
         seed: int = 2024,
-        num_layers: int = 20,
         **kwargs,
 ):
     if torch.cuda.is_available():
@@ -39,14 +40,15 @@ def train(
     model = model.to(device)
     model.train()
 
-    train_data = load_data("classification_data/train", shuffle=True, batch_size=batch_size, num_workers=2)
-    val_data = load_data("classification_data/val", shuffle=False)
+    train_data = classification_dataset.load_data("classification_data/train", shuffle=True, batch_size=batch_size,
+                                                  num_workers=2)
+    val_data = classification_dataset.load_data("classification_data/val", shuffle=False)
 
     # create loss function and optimizer
-    loss_func = ClassificationLoss()
-
-    # optimizer = ...
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0)
+    loss_func = torch.nn.CrossEntropyLoss(reduction="mean")
+    l2_lambda = 0.005  # Adjust the regularization strength
+    l2_regularization = sum(p.pow(2).sum() for p in model.parameters())
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-3)
 
     global_step = 0
     metrics = {"train_acc": [], "val_acc": []}
@@ -56,49 +58,30 @@ def train(
         # clear metrics at beginning of epoch
         for key in metrics:
             metrics[key].clear()
+
         model.train()
 
         for img, label in train_data:
             img, label = img.to(device), label.to(device)
 
-            # TODO: implement training step
+            pred = model(img)
 
-            out = model(img)  # flatten the input
-            # loss calculation
-            loss_val = loss_func(out, label)
-
-            # Backpropagation
+            loss_val = loss_func(pred, label)
             optimizer.zero_grad()
             loss_val.backward()
             optimizer.step()
-
-            # calculate train accuracy + store to metrics
             global_step += 1
-            pred = torch.argmax(out, dim=1)
-            correct = (pred == label).sum().item()
-            accuracy = correct / len(label)
-            metrics["train_acc"].append(accuracy)
 
         # disable gradient computation and switch to evaluation mode
         with torch.inference_mode():
             model.eval()
-            total_correct = 0
-            total_samples = 0
 
             for img, label in val_data:
                 img, label = img.to(device), label.to(device)
 
-                # TODO: compute validation accuracy
-                out = model(img)  # Flatten the input
-
-                # Compute validation accuracy
-                pred = torch.argmax(out, dim=1)
-                correct = (pred == label).sum().item()
-                total_correct += correct
-                total_samples += len(label)
-
-            val_accuracy = total_correct / total_samples
-            metrics["val_acc"].append(val_accuracy)
+                pred = model(img)
+                loss_val = loss_func(pred, label)
+                metrics["val_acc"].append(loss_val)
 
         # log average train and val accuracy to tensorboard
         epoch_train_acc = torch.as_tensor(metrics["train_acc"]).mean()
@@ -130,7 +113,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=2024)
 
     # optional: additional model hyperparamters
-    parser.add_argument("--num_layers", type=int, default=3)
+    parser.add_argument("--batch_size", type=int, default=128)
 
-    # pass all arguments to train
+    # pass all arguments to train, specify model name here
     train(**vars(parser.parse_args()))
